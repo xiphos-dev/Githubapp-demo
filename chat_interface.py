@@ -4,6 +4,8 @@ from flask import request, jsonify
 from github import Github
 from dotenv import load_dotenv
 import base64
+import json
+import pprint
 
 class Menu:
     def __init__(self, options):
@@ -34,10 +36,11 @@ class Menu:
                 
                 #print(commits[0].keys())
                 most_recent_commit_sha = commits[0]["sha"]
-                most_recent_commit_url = commits[0]["url"]
+                most_recent_commit_url = commits[1]["url"]
                 
                 commit_response = requests.get(most_recent_commit_url, headers=headers)
                 commit_response.raise_for_status()
+                print(commit_response)
                 commit_details = commit_response.json()
                 
                 files = commit_details.get('files', [])
@@ -60,7 +63,56 @@ class Menu:
         except requests.RequestException as e:
             print(f"An error occurred: {e}")
             return []
+    
+    def get_issues(self, owner, repo_name):
+        headers = {
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {os.environ.get('GITHUB_TOKEN')}",
+            "X-GitHub-Api-Version": "2022-11-28"
+        }
         
+        url = f" https://api.github.com/repos/{owner}/{repo_name}/issues"
+        
+        try:
+            response = requests.get(url, headers=headers)
+            response.raise_for_status()
+            content = response.json()
+            if len(content) == 0:
+                return "No issues found"
+            try:
+                #print(content[0])
+                print(content[0].keys())
+                formatted_content = content[0]["comments_url"]
+                #json_content = json.loads(content[0])
+                #formatted_content = json.dumps(json_content, indent=4)
+            except json.JSONDecodeError:
+                formatted_content = content[0]
+                #formatted_content = repr(content)
+                #print("Pretty content:"+formatted_content)
+            #print("Content by sha:"+content)
+            return formatted_content
+        except requests.RequestException as e:
+            return f"An error occurred: {e}"
+        
+    def get_branches(self, owner, repo_name):
+        
+        headers = {
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {os.environ.get('GITHUB_TOKEN')}",
+            "X-GitHub-Api-Version": "2022-11-28"
+        }
+        
+        url = f" https://api.github.com/repos/{owner}/{repo_name}/branches"
+        
+        try:
+            response = requests.get(url, headers=headers)
+            response.raise_for_status()
+            branches = response.json()
+
+            return [{"name":branch["name"], "sha": branch["commit"]["sha"]} for branch in branches]
+        except requests.RequestException as e:
+            return f"An error occurred: {e}"
+      
     def get_file_content_by_sha(self, owner, repo_name, sha, token):
         """
         Fetches the content of a file by its SHA from the specified GitHub repository.
@@ -73,7 +125,7 @@ class Menu:
         """
         headers = {
             "Accept": "application/vnd.github+json",
-            "Authorization": f"Bearer {token}",
+            "Authorization": f"Bearer {os.environ.get('GITHUB_TOKEN')}",
             "X-GitHub-Api-Version": "2022-11-28"
         }
         
@@ -84,12 +136,33 @@ class Menu:
             response.raise_for_status()
             blob = response.json()
             content = base64.b64decode(blob['content']).decode('utf-8')
+            # Pretty print JSON files
+            
+            try:
+                json_content = json.loads(content)
+                formatted_content = json.dumps(json_content, indent=4)
+            except json.JSONDecodeError:
+                formatted_content = content
+                #formatted_content = repr(content)
+                #print("Pretty content:"+formatted_content)
             #print("Content by sha:"+content)
-            return content
+            return formatted_content
         except requests.RequestException as e:
             return f"An error occurred: {e}"
     
-    
+    def get_filepath_content(self,owner,repo_name,filepath):
+        headers = {
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {os.environ.get('GITHUB_TOKEN')}",
+            "X-GitHub-Api-Version": "2022-11-28"
+        }
+        
+        url = f"https://api.github.com/repos/{owner}/{repo_name}/contents/{filepath}"
+        response = requests.get(url, headers=headers)
+        response.raise_for_status()
+        file_data = response.json()
+        
+        return self.get_file_content_by_sha(owner,repo_name,file_data["sha"],"")
     
     def display_menu(self):
         """
@@ -128,7 +201,7 @@ if __name__ == "__main__":
     load_dotenv()
 
     # Define the list of options
-    options = ["Fetch Commits", "Exit"]
+    options = ["Fetch Commits", "Branches", "File content", "Issues", "Exit"]
     
     # Initialize the Menu class with the list of options
     menu = Menu(options)
@@ -153,9 +226,38 @@ if __name__ == "__main__":
                 for file in commits['files']:
                     print(f"- {file['filename']}: {file['sha']}")
             else:
-                print(commits)
+                for content in commits:
+                    print(repr(content))
 
-        
         elif choice == 2:
+            owner = "xiphos-dev"
+            repo_name = "Githubapp-demo"
+            
+            # Fetch and display the commits
+            branches = menu.get_branches(owner, repo_name)
+            if isinstance(branches, list):
+                for branch in branches:
+                    print(f"Name: {branch['name']}")
+                    print(f"Commit SHA: {branch['sha']}")
+        
+        elif choice == 3:
+            owner = "xiphos-dev"
+            repo_name = "Githubapp-demo"
+            path="handler.py"
+            
+            # Fetch and display the commits
+            file_blob = menu.get_filepath_content(owner, repo_name, path)
+            print(file_blob)
+                    
+
+        elif choice == 4:
+            owner = "qgis"
+            repo_name = "QGIS"
+            
+            # Fetch and display the commits
+            most_recent_issue = menu.get_issues(owner, repo_name)
+            print(most_recent_issue)
+            
+        elif choice == len(options):
             print("Exiting...")
             break
