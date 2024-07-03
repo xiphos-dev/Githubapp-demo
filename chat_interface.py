@@ -1,0 +1,161 @@
+import os
+import requests
+from flask import request, jsonify
+from github import Github
+from dotenv import load_dotenv
+import base64
+
+class Menu:
+    def __init__(self, options):
+        """
+        Initializes the Menu with a list of options.
+        
+        :param options: List of strings representing the menu options.
+        """
+        self.options = options
+        
+    def get_commits(self, owner, repo_name):
+        """
+        Fetches the commits from the specified GitHub repository.
+        
+        :param owner: The owner of the repository.
+        :param repo_name: The name of the repository.
+        :return: A list of commit messages.
+        """
+        url = f"https://api.github.com/repos/{owner}/{repo_name}/commits"
+        url = "https://api.github.com/repos/xiphos-dev/Githubapp-demo/commits"
+        token = os.environ.get("GITHUB_TOKEN")
+        try:
+            headers = {"Accept": "application/vnd.github+json", "Authorization": f"Bearer {token}", "X-GitHub-Api-Version": "2022-11-28"}
+            response = requests.get(url, headers=headers)
+            response.raise_for_status()
+            commits = response.json()
+            if commits:
+                
+                #print(commits[0].keys())
+                most_recent_commit_sha = commits[0]["sha"]
+                most_recent_commit_url = commits[0]["url"]
+                
+                commit_response = requests.get(most_recent_commit_url, headers=headers)
+                commit_response.raise_for_status()
+                commit_details = commit_response.json()
+                
+                files = commit_details.get('files', [])
+                file_details = [{"filename": file['filename'], "sha": file['sha']} for file in files]
+                '''
+                
+                return {
+                    "commit_message": commits[0]['commit']['message'],
+                    "commit_sha": most_recent_commit_sha,
+                    "files": file_details
+                }
+            else:
+                return [commit['commit']['message'] for commit in commits]
+                
+                '''
+                content = []
+                for file in file_details:
+                    content.append(self.get_file_content_by_sha("xiphos-dev","Githubapp-demo",file["sha"],token))
+                return content
+        except requests.RequestException as e:
+            print(f"An error occurred: {e}")
+            return []
+        
+    def get_file_content_by_sha(self, owner, repo_name, sha, token):
+        """
+        Fetches the content of a file by its SHA from the specified GitHub repository.
+        
+        :param owner: The owner of the repository.
+        :param repo_name: The name of the repository.
+        :param sha: The SHA of the file blob.
+        :param token: GitHub personal access token for authentication.
+        :return: The content of the file.
+        """
+        headers = {
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {token}",
+            "X-GitHub-Api-Version": "2022-11-28"
+        }
+        
+        url = f"https://api.github.com/repos/{owner}/{repo_name}/git/blobs/{sha}"
+        #url = f"https://api.github.com/repos/xiphos-dev/Githubapp-demo/git/blobs/{sha}"
+        try:
+            response = requests.get(url, headers=headers)
+            response.raise_for_status()
+            blob = response.json()
+            content = base64.b64decode(blob['content']).decode('utf-8')
+            #print("Content by sha:"+content)
+            return content
+        except requests.RequestException as e:
+            return f"An error occurred: {e}"
+    
+    
+    
+    def display_menu(self):
+        """
+        Displays the menu options to the user.
+        """
+        print("Please select an option:")
+        for i, option in enumerate(self.options, 1):
+            print(f"{i}. {option}")
+    
+    def get_user_choice(self):
+        """
+        Prompts the user to select an option from the menu.
+        
+        :return: The user's choice as an integer.
+        """
+        while True:
+            try:
+                choice = int(input("Enter the number of your choice: "))
+                if 1 <= choice <= len(self.options):
+                    return choice
+                else:
+                    print(f"Please enter a number between 1 and {len(self.options)}.")
+            except ValueError:
+                print("Invalid input. Please enter a valid integer.")
+    
+    def run(self):
+        """
+        Runs the menu selection process.
+        
+        :return: The user's choice (1-indexed).
+        """
+        self.display_menu()
+        return self.get_user_choice()
+
+if __name__ == "__main__":
+    load_dotenv()
+
+    # Define the list of options
+    options = ["Fetch Commits", "Exit"]
+    
+    # Initialize the Menu class with the list of options
+    menu = Menu(options)
+    
+    while True:
+        # Run the menu and get the user's choice
+        choice = menu.run()
+        
+        if choice == 1:
+            # Get the repository owner and name from the user
+            #owner = input("Enter the repository owner: ")
+            #repo_name = input("Enter the repository name: ")
+            owner = "xiphos-dev"
+            repo_name = "Githubapp-demo"
+            
+            # Fetch and display the commits
+            commits = menu.get_commits(owner, repo_name)
+            if isinstance(commits, dict):
+                print(f"Most recent commit message: {commits['commit_message']}")
+                print(f"Commit SHA: {commits['commit_sha']}")
+                print("Modified files:")
+                for file in commits['files']:
+                    print(f"- {file['filename']}: {file['sha']}")
+            else:
+                print(commits)
+
+        
+        elif choice == 2:
+            print("Exiting...")
+            break
