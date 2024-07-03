@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 import pysmee
 import requests
 import time
+import hashlib
 
 load_dotenv()
 
@@ -59,7 +60,7 @@ def webhook():
     return jsonify({"message": "Webhook received"}), 200
 
 def is_valid_signature(payload, signature):
-    secret = bytes(webhook_secret, 'utf-8')
+    secret = bytes(WEBHOOK_SECRET, 'utf-8')
     hash_value = hmac.new(secret, payload, hashlib.sha256).hexdigest()
     expected_signature = f"sha256={hash_value}"
     return hmac.compare_digest(expected_signature, signature)
