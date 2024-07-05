@@ -406,6 +406,67 @@ class Menu:
         for collab in filtered_collaborators:
             print(f"- {collab['login']} (Permissions: {json.dumps(collab['permissions'])})")
 
+    def search_file_in_repo(self,filename, owner="", repo_name=""):
+        
+        if owner == "" or repo_name == "":
+            url = f"https://api.github.com/search/code?q={filename}+repo:{self.github_repo_owner}/{self.github_repo_name}"
+        else:
+            url = f"https://api.github.com/search/code?q={filename}+repo:{owner}/{repo_name}"
+        
+
+        try:
+            response = requests.get(url, headers=self.headers)
+            response.raise_for_status()  # Raise an exception for bad status codes (4xx or 5xx)
+            results = response.json()
+            
+            # Extract relevant information from the response
+            items = results.get('items', [])
+            file_results = []
+            
+            for item in items:
+                file_results.append({
+                    'name': item['name'],
+                    'path': item['path'],
+                    'repository': item['repository']['full_name'],
+                    'url': item['html_url'],
+                    'sha': item['sha']
+                })
+            if items:    
+                for num, item in enumerate(file_results):
+                    print(f"File #{num+1}")
+                    print(f"File Name: {item['name']}")
+                    print(f"File Path: {item['path']}")
+                    print(f"Repository: {item['repository']}")
+                    print(f"URL: {item['url']}")
+                    print()
+            else:
+                print("No results found or error occurred.")
+                
+            while True:
+                try:
+                    choice = int(input("Enter the file number you wish to examine or 0 to return: "))
+                    if choice == 0:
+                        break
+                    elif isinstance(choice, int) and choice <= len(file_results):
+                        if owner == "":
+                            owner = self.github_repo_owner
+                            repo_name = self.github_repo_name
+                        print(file_results[choice-1].keys() )
+                        print(self.get_file_content_by_sha(file_results[choice-1]["sha"], owner, repo_name))
+                        break
+                    else:
+                        print(f"Please enter a valid number.")
+                except ValueError:
+                    print("Invalid input. Please enter a valid integer.")
+            
+            return 
+        
+        except requests.RequestException as e:
+            print(f"An error occurred: {e}")
+            return None
+        except Exception as e:
+            print(f"Unexpected error: {e}")
+            return None
     
     def run(self):
         """
@@ -426,6 +487,7 @@ if __name__ == "__main__":
         "List Last N Issues",
         "List Pull Requests",
         "List collaborators",
+        "Search file name",
         "Exit"
     ]
     
@@ -500,6 +562,12 @@ if __name__ == "__main__":
             permission="admin"
             menu.list_collaborators(owner, repo_name)
             #menu.list_collaborators(permission=permission)
+            
+        elif choice == 7:
+                filename = "handler"
+                
+                results = menu.search_file_in_repo(filename)
+
             
         elif choice == len(options):
             print("Exiting...")
