@@ -35,32 +35,24 @@ class Menu:
         :param repo_name: The name of the repository.
         :return: A list of commit messages.
         """
-        
         if owner == "" or repo_name == "":
             url = f"https://api.github.com/repos/{self.github_repo_owner}/{self.github_repo_name}/commits"
         else:
             url = f"https://api.github.com/repos/{owner}/{repo_name}/commits"
             
         if branch != "":
-            url += f"/{branch}"
+            params = {"sha": branch}
         #url = "https://api.github.com/repos/xiphos-dev/Githubapp-demo/commits"
         print(f"URL:{url}")
         try:
-            response = requests.get(url, headers=self.headers)
+            if branch != "":
+                response = requests.get(url, headers=self.headers, params=params)
+            else:
+                response = requests.get(url, headers=self.headers)
             response.raise_for_status()
             commits = response.json()
             if commits:
-                if isinstance(commits,dict): # api call to specific branch returns a dictionary
-                    print(commits.keys())
-                    print(commits)
-                    commit_details = {
-                        "commit_message": commits["commit"]["message"],
-                        "commit_sha": commits["sha"],
-                        "author": commits["commit"]["author"]["name"],
-                        "date": commits["commit"]["author"]["date"]
-                    }
-                #print(commits[0].keys())
-                elif isinstance(commits,list): # api call to default branch returns a list
+                if isinstance(commits,list): 
                    # most_recent_commit_sha = commits[0]["sha"]
                   #  most_recent_commit_url = commits[0]["url"]
                     for num, commit in enumerate(commits[:5]):
@@ -73,7 +65,7 @@ class Menu:
                     
                     while True:
                         try:
-                            choice = int(input(print("Please enter a commit number or 0 to return")))
+                            choice = int(input("Please enter a commit number or 0 to return"))
                             if choice == 0:
                                 break
                             elif isinstance(choice, int) and choice <= len(commits):
@@ -83,11 +75,12 @@ class Menu:
                                     print(f"File #{num+1}")
                                     print(f"{file['filename']}")
                                     
-                                choice = int(input(print("Please enter a file number or 0 to return")))
+                                choice = int(input("Please enter a file number or 0 to return"))
                                 if choice == 0:
                                     break
                                 
                                 elif isinstance(choice, int) and choice <= len(modified_files):
+                                    print("Fetching commit")
                                     print(self.get_file_content_by_sha(modified_files[choice-1]["sha"], owner, repo_name))
                                 
                                 else:
@@ -211,12 +204,15 @@ class Menu:
         else:
             url = f"https://api.github.com/repos/{owner}/{repo_name}/git/blobs/{sha}"
         #url = f"https://api.github.com/repos/xiphos-dev/Githubapp-demo/git/blobs/{sha}"
+        print(f"URL:{url}")
         try:
             response = requests.get(url, headers=self.headers)
+            print("Retrieved URL")
             response.raise_for_status()
             blob = response.json()
+            
             content = base64.b64decode(blob['content']).decode('utf-8')
-            #print(f"Raw content:{content}")
+            print(f"Decoded:{content}")
             # Pretty print JSON files
             
             try:
@@ -229,8 +225,11 @@ class Menu:
             #print("Content by sha:"+content)
             return formatted_content
         except requests.RequestException as e:
+            print(f"An error occurred: {e}")
             return f"An error occurred: {e}"
-    
+        except Exception as e:
+            print(f"Error decoding content: {e}")
+            return f"Error decoding content: {e}"
     def get_filepath_content(self, filepath, owner="", repo_name=""):
         
         if owner == "" or repo_name=="":
@@ -293,7 +292,7 @@ class Menu:
         print(f"  Reactions: {most_popular_comment['reactions']}")
         
         
-    def list_pull_requests(self, owner="", repo_name="", state="all"):
+    def list_pull_requests(self, owner="", repo_name="", state="open", sort="created", direction="desc"):
         """
         Lists pull requests for the specified GitHub repository.
         """
@@ -304,7 +303,11 @@ class Menu:
             url = f"https://api.github.com/repos/{owner}/{repo_name}/pulls"
             print(f"Pull Requests for {owner}/{repo_name}:")
  
-        params = {'state': state}
+        params = {
+            'state': state,
+            'sort': sort,
+            'direction': direction
+        }
         response = requests.get(url, headers=self.headers, params=params)
 
         pull_requests = response.json()
@@ -367,9 +370,14 @@ class Menu:
             except ValueError:
                 print("Invalid input. Please enter a valid integer.")
         
-    def list_collaborators(self, owner="", repo_name=""):
+    def list_collaborators(self, owner="", repo_name="", affiliation="all", permission=None, org=None):
         """
-        Lists all collaborators for the specified GitHub repository.
+        Lists collaborators for the repository with optional filters for affiliation, permission, and organization.
+
+        :param affiliation: Filter by the affiliation of the collaborators. Can be 'outside', 'direct', or 'all'.
+        :param permission: Filter by the permission level of the collaborators. Can be 'pull', 'push', or 'admin'.
+        :param org: Filter by the organization of the collaborators.
+        :return: A list of collaborators.
         """
         
         if owner == "" or repo_name == "":
@@ -379,14 +387,25 @@ class Menu:
             url = f"https://api.github.com/repos/{owner}/{repo_name}/collaborators"
             print(f"Collaborators for {owner}/{repo_name}:")
         print(f"URL:{url}")
-        response = requests.get(url, headers=self.headers)
+        params = {'affiliation': affiliation}
+        response = requests.get(url, headers=self.headers, params=params)
         response.raise_for_status()
         collaborators = response.json()
-        
-        
+
+        filtered_collaborators = []
         for collaborator in collaborators:
-            print(f"- {collaborator['login']} ({collaborator['html_url']})")
-            
+            user_data = requests.get(collaborator['url'], headers=self.headers).json()
+            #print(collaborator['permissions'])
+            if permission and collaborator['permissions'][permission] != True:
+                continue
+            if org and 'company' in user_data and user_data['company'] != org:
+                continue
+            filtered_collaborators.append(collaborator)
+
+        print(f"Filtered collaborators (affiliation='{affiliation}', permission='{permission}', org='{org}'): ")
+        for collab in filtered_collaborators:
+            print(f"- {collab['login']} (Permissions: {json.dumps(collab['permissions'])})")
+
     
     def run(self):
         """
@@ -469,14 +488,18 @@ if __name__ == "__main__":
         elif choice == 5:
             owner = "qgis"
             repo_name = "QGIS"
-            menu.list_pull_requests(owner, repo_name)
+            state="open" 
+            sort="popularity" 
+            direction="asc"
+            menu.list_pull_requests(owner, repo_name, state, sort, direction)
             #menu.list_pull_requests(state="closed")
             
         elif choice == 6:
             owner = "qgis"
             repo_name = "QGIS"
-            #menu.list_collaborators(owner, repo_name)
-            menu.list_collaborators()
+            permission="admin"
+            menu.list_collaborators(owner, repo_name)
+            #menu.list_collaborators(permission=permission)
             
         elif choice == len(options):
             print("Exiting...")
