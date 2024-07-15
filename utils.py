@@ -16,7 +16,6 @@ class Issues:
         response = response.json()
         return response
 
-
 class Files:
         
     def search_file(self, token: str, url: str):
@@ -70,7 +69,6 @@ class Files:
         except Exception as e:
             print(f"Error decoding content: {e}")
             return f"Error decoding content: {e}"
-        
 
 class Branches:
     
@@ -115,6 +113,37 @@ class Branches:
             return branches
         except requests.RequestException as e:
             return f"An error occurred: {e}"
+        
+    def get_files_from_branch(self, token, owner, repo, branch):
+        url = f"https://api.github.com/repos/{owner}/{repo}/git/trees/{branch}?recursive=1"
+        headers = {
+            'Authorization': f'Bearer {token}',
+            'Accept': 'application/vnd.github.v3+json'
+        }
+
+        try:
+            response = requests.get(url, headers=headers)
+            response.raise_for_status()  # Raise an exception for bad status codes
+            data = response.json()
+            
+            # Extract file information
+            files = []
+            if 'tree' in data:
+                for item in data['tree']:
+                    if item['type'] == 'blob':  # Check if it's a file (blob)
+                        print(item.keys())
+                        files.append({
+                            'path': item['path'],
+                            'url': item['url'],
+                            'type': item['type'],
+                            'size': item['size']
+                        })
+            
+            return files
+
+        except requests.exceptions.RequestException as e:
+            print(f"Error fetching files from GitHub: {e}")
+            return None
 
 class Commits:
 
@@ -252,7 +281,7 @@ class Commits:
         except Exception as e:
             print(f"Unexpected error: {e}")
             return None
-    
+
 class PullRequest:
     
     def pull_requests_to_markdown(self, pull_requests):
@@ -353,24 +382,23 @@ class PullRequest:
 
         try:
             response = requests.post(url, json=payload, headers=headers)
-            response.raise_for_status()  # Raise an exception for HTTP errors
+            #response.raise_for_status()  # Raise an exception for HTTP errors
             return response.json()
+        
         except requests.exceptions.RequestException as e:
             print(f"Error: {e}")
             if e.response.status_code == 422:
                 print(f"Response content: {e.response.json()}")
-            return None
+            return response.json()
         
     def update_pull_request(self, token: str, repo_owner: str, repo_name: str, pull_number: int, state: str, body: str = "", title: str = "", base: str = ""):
         """
-        Create a review for a pull request on GitHub.
 
         Parameters:
         - owner (str): The owner of the repository.
         - repo (str): The name of the repository.
         - pull_number (int): The number of the pull request.
         - body (str): The body text of the review.
-        - event (str): The review action ('APPROVE', 'REQUEST_CHANGES', 'COMMENT').
         - token (str): The personal access token for GitHub authentication.
 
         Returns:
@@ -398,7 +426,7 @@ class PullRequest:
             print(f"Error: {e}")
             if e.response.status_code == 422:
                 print(f"Response content: {e.response.json()}")
-                return None
+                return response.json()
 
     def merge(self, token: str, repo_owner: str, repo_name: str, pull_number: int, commit_title: str = "", commit_message: str = "", sha: str = "", merge_method: str = ""):
         """
@@ -449,7 +477,7 @@ class PullRequest:
             return result
         except requests.RequestException as e:
             print(f"An error occurred: {e}")
-            return None
+            return response.json()
         except Exception as e:
             print(f"Unexpected error: {e}")
             return None
@@ -543,7 +571,7 @@ class PullRequest:
         
         except requests.RequestException as e:
             print(f"An error occurred: {e}")
-            return None
+            return response.json()
         except Exception as e:
             print(f"Unexpected error: {e}")
             return None
@@ -608,21 +636,24 @@ parameters_diff = {}
 parameters_diff["token"] = token
 parameters_diff["repo_owner"] = "xiphos-dev"
 parameters_diff["repo_name"] = "Githubapp-demo"
-parameters_diff["pull_number"] = 5
+parameters_diff["pull_number"] = 6
 
 #respuesta = pr.create_pull_request_review(**parameters)
 #respuesta = pr.update_pull_request(**parameters_update)
 #respuesta = pr.merge(**parameters_merge)
 respuesta = pr.diff(**parameters_diff)
-print(respuesta)
+#print(respuesta)
 
 def check_diff(diff):
+    '''
     for item in diff:
         print(item.keys())
-        print(f"Patch:{item['patch']}")
+        print(f"Patch:{item.get('patch','')}")
         print(f"Filename:{item['filename']}")
         print(f"Additions:{item['additions']}")
         print(f"Changes:{item['changes']}")
+    '''
+    print(diff[3])
 
 check_diff(respuesta)
 '''
@@ -658,3 +689,24 @@ url_issue = "https://api.github.com/search/issues?q=is:issue+is:open+repo:qgis/Q
 comentarios = issues.search_issues(token, url_issue)
 print(type(comentarios))
 '''
+
+import os
+
+branch = Branches()
+parameters = {}
+
+token = os.getenv("GITHUB_TOKEN").strip()
+if not token:
+    raise ValueError("Token is missing or empty")
+parameters["token"] = token
+parameters["owner"] = "qgis"
+parameters["repo"] = "QGIS"
+parameters["branch"] = "release-2_18"
+
+files = branch.get_files_from_branch(**parameters)
+
+if files:
+    for file in files:
+        print(f"Path: {file['path']}, URL: {file['url']}, Type: {file['type']}, Size: {file['size']} bytes")
+else:
+    print("Failed to fetch files.")
