@@ -230,6 +230,7 @@ class Menu:
         except Exception as e:
             print(f"Error decoding content: {e}")
             return f"Error decoding content: {e}"
+        
     def get_filepath_content(self, filepath, owner="", repo_name=""):
         
         if owner == "" or repo_name=="":
