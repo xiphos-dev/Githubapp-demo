@@ -1,11 +1,438 @@
-from typing import  Optional, Dict, Any
+from typing import  Optional, Dict, Any, List
 import together
 import asyncio
 import os
+import sys
+
+#if '__file__' not in globals():
+ #   __file__ = os.path.abspath('tools.py')  
+
+prompts_path = os.path.abspath('./prompts')
+
+sys.path.append(os.path.abspath(prompts_path))
+print("sys.path:", sys.path)
 import ast
-from utils import PullRequest, Commits, Branches, Files, Issues
+from pydantic import BaseModel
+from utils import PullRequests, Commits, Branches, Files, Issues
+from prompts import UNIVERSAL_ANALYSIS,  UNIVERSAL_UNION
+import logging, requests
+import tiktoken
+from transformers import AutoTokenizer
+from huggingface_hub.hf_api import HfFolder
 
 #from langchain.tools import BaseTool
+
+class GithubDiff():
+    
+    HfFolder.save_token(os.getenv('HF_TOKEN').strip())
+    def __init__(self, diff, user_prompt, model, export=False, max_tokens=3000):
+        self.diff = diff
+        self.user_prompt = user_prompt
+        self.tokenizer = AutoTokenizer.from_pretrained(model)
+        self.MAX_TOKENS = max_tokens
+        self.model = "Hermes" if "Hermes" in model else "Llama"
+        self.model_repository = model
+        self.export=False
+    
+    api_key = os.getenv("TOGETHERAI_MIXTRAL_API_KEY")
+    if not api_key:
+        raise ValueError("API key is missing or empty")
+    together.api_key = api_key.strip()
+    
+    def token_count(self, prompt):
+        return len(self.tokenizer.tokenize(prompt))
+
+    def neo_format_prompt(self, prompt, prompt_type, model, final=False):
+    
+        if prompt_type == "SYSTEM":
+            if model == "Llama":
+                return "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n"+prompt+"<|eot_id|>"
+            
+        elif prompt_type == "USER":
+            if model == "Llama":
+                end = ""
+                if final:
+                    end = "<|start_header_id|>assistant<|end_header_id|>\n\n"
+                return "<|start_header_id|>user<|end_header_id|>\n\n"+prompt+"<|eot_id|>"+end
+    '''
+    def format_prompt(self, prompt, prompt_type, model, divided_user_prompt="", final=False, type=""): 
+    
+        if prompt_type == "SYSTEM_SPLIT":
+            if model == "Llama":
+                return f"<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n{prompt}The previous instruction is as follows: {divided_user_prompt}.<|eot_id|>"
+            elif model == "Hermes":
+                return "<|im_start|>system\n"+prompt+divided_user_prompt+"<|im_end|>"
+            
+        if prompt_type == "SYSTEM":
+            
+            if model == "Llama":
+                if "code" in type:
+                    return "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n"+prompt+"<|eot_id|>"+CODE_TEMPLATE_2
+                elif "documentation" in type:
+                    return "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n"+prompt+"<|eot_id|>"+DOCUMENTATION_TEMPLATE
+                
+                return "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n"+prompt+"<|eot_id|>"
+            elif model == "Hermes":
+                return "<|im_start|>system\n"+prompt+"<|im_end|>"
+            
+        elif prompt_type == "ASSISTANT":
+            end = ""
+            if model == "Llama":
+                if final:
+                    end = "<|eot_id|>"
+                return "<|start_header_id|>assistant<|end_header_id|>\n\n"+prompt+end
+            elif model == "Hermes":
+                if final:
+                    end = "<|im_end|>"
+                return "<|im_start|>assistant\n"+prompt+end
+            
+        elif prompt_type == "USER":
+            end = ""
+            if model == "Llama":
+                if final:
+                    end = "<|start_header_id|>assistant<|end_header_id|>\n\n"
+                return "<|start_header_id|>user<|end_header_id|>\n\n"+prompt+"<|eot_id|>"+end
+            elif model == "Hermes":
+                if final:
+                    end = "<|im_start|>assistant\n"
+                return "<|im_start|>user\n"+prompt+"<|im_end|>"+end
+    '''           
+    def format_diff(self, diff, one_diff=False):
+        
+        if isinstance(diff, list):
+            if not one_diff: # one diff is a flag used for debugging single diff elements from the entire list
+                all_diffs = ""
+                
+                for patch in diff:
+                    all_diffs = f"{all_diffs}\nFilename - {patch.get('filename')}:```{patch.get('patch','No patch')}```"
+                return all_diffs
+            else:
+                formatted_diffs = []
+                for patch in diff:# give format to diff patch information: Filename\n Status\n code
+                    file_data = {'Filename': patch.get('filename'), 'Status': patch.get('Status')}
+                    formatted_diffs.append((file_data,f"<code> {patch.get('patch','No patch')} </code>"))
+                return formatted_diffs
+        elif isinstance(diff, dict):
+            return "diccionario"
+                
+            
+    def truncate_to_tokens(self, text, max_tokens, model_name="meta-llama/Meta-Llama-3-70B", token_overlap=0, file_details=None):
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        tokens = tokenizer.tokenize(text)
+        begin_code_tag = "<code>"
+        end_code_tag = "</code>"
+        #print(f"TOKENS:{len(tokens)}")
+        #print(f"MAX_TOKENS:{max_tokens}")
+        if len(tokens) <= max_tokens:
+            return f"Filename:{file_details['Filename']}\nStatus:{file_details['Status']}\n{text}", ""
+        
+        truncated_tokens = tokens[:max_tokens-10] # make room for '<code>' and '</code>' tags
+        remaining_tokens = tokens[max_tokens-token_overlap-10:]
+        
+        truncated_text = f"{tokenizer.convert_tokens_to_string(truncated_tokens)} {end_code_tag}" # terminate the code block with the proper tag after cutting the text in two
+        split_string = truncated_text.strip().split("\n")
+        #print(f"Splitting patch diff over breakline character [Line 126] - {split_string}")
+        if len(split_string) > 2:
+            if isinstance(file_details, dict):
+                filename = f"Filename:{file_details['Filename']}"
+                status = f"Status:{file_details['Status']}"
+            else:
+                filename = split_string[0] if "Filename" in split_string[0] else ""
+                status = split_string[1] if "Status" in split_string[1] else ""
+                print(f"Splitting String [Line 172] - Filename:{filename}, Status:{status}")
+            remaining_text = f"{filename}\{status}\n{begin_code_tag} {tokenizer.convert_tokens_to_string(remaining_tokens)}"
+        else:
+            remaining_text = tokenizer.convert_tokens_to_string(remaining_tokens)
+    
+        return truncated_text, remaining_text
+    
+    async def inference(self, prompt, model, max_tokens=512):
+        try:
+            if model == "meta-llama/Meta-Llama-3.1-70B-Instruct":
+                    model +="-Turbo"
+            print(f"Model:{model}")
+            print(prompt)
+            output =  together.Complete.create(
+                #model = "mistralai/Mixtral-8x7B-Instruct-v0.1", 
+                #model="cognitivecomputations/dolphin-2.5-mixtral-8x7b",
+                #model="NousResearch/Nous-Hermes-2-Mixtral-8x7B-DPO",   
+                #model="NousResearch/Nous-Hermes-2-Mixtral-8x7B-SFT",   
+                #model="Qwen/Qwen1.5-14B-Chat",
+                model=model,
+                prompt=prompt,
+                #model="Qwen/Qwen2-72B-Instruct",
+                #model="meta-llama/Llama-3-70b-chat-hf",
+                #model="meta-llama/Llama-3-8b-chat-hf",
+                #model="deepseek-ai/deepseek-coder-33b-instruct",
+                #prompt=prompt_3,
+                #prompt=PROMPT_SATORI_FINAL_L.format(query=query, hist=t2),
+                temperature=0.1,
+                top_p=0.85,
+                top_k=40,
+                max_tokens=max_tokens,  
+                repetition_penalty=1.1,
+                #stop = ["</s>", "[INST]", "<|im_end|>"]
+                stop = ["</s>", "[INST]", "User:", "<|eot_id|>"]#, "`", "` "] #, '"', "\"\n\n", "</json>",'"\n']#, "01", "_v01"]
+            )
+            #print("\n")
+            #print(f"Prompt run clash (answer inst):{answer_inst}")
+            #out_long = output['output']['choices'][0]['text']
+            # print(f"Answer prompt output:\n{out_long}")
+            print(f"Answer:{output['output']['choices'][0]['text']}")
+            print(output["output"]["usage"])
+            print("*"*25)
+            return output
+    
+        except requests.exceptions.HTTPError as e:
+            # Log the HTTP error details
+            logging.error(f"HTTPError: {e}")
+            logging.error(f"Response status code: {e.response.status_code}")
+            logging.error(f"Response content: {e.response.content}")
+            raise
+
+        except Exception as e:
+            # Log any other exceptions
+            logging.error(f"Exception: {e}")
+            raise
+        
+    async def _aprep_clash(self,
+        chat_history: list, 
+        #agent_type: str, 
+        #user_p: str, 
+        #q_len: int
+    ):
+        
+        self.hist = chat_history
+        
+        string_list = self.format_diff(self.diff, True)
+        #split_diff(listado_strings, tokenizer_hermes)
+        #model_name = "NousResearch/Nous-Hermes-2-Mixtral-8x7B-DPO"
+        
+        token_and_string_list = []
+        
+        for file_data, string in string_list:
+            token_and_string_list.append((file_data, string, self.token_count(string)))
+        
+        token_and_string_list = sorted(token_and_string_list, key=lambda x: x[2])
+        
+        #diff_patch = "```{patch}```"
+        tokens_actual = 0
+        result = "" # result accumulates strings up to MAX_TOKENS length. Each string accumulated  corresponds to some file's diff patch. This means that there's 1 string per modified/added/removed file in the pull request 
+        answers_list = []
+        
+        for file_data, string, tokens in token_and_string_list:
+            
+            tokens_actual += tokens
+            if tokens_actual <= self.MAX_TOKENS: # accumulate shorter than MAX_TOKENS data inside the prompt
+                truncated, _ = self.truncate_to_tokens(string, self.MAX_TOKENS, self.model_repository, file_details=file_data)
+                result += truncated + "\n\n"
+                #result += diff_patch.format(patch=truncated) + "\n"
+                
+            else:
+                outputs = []
+                tokens_actual = 0
+                if result != "": # applying inference over previously accumulated data
+                    prompt_system = self.neo_format_prompt( UNIVERSAL_ANALYSIS.format(patch=result), "SYSTEM", self.model )
+                    prompt_user = f"{self.neo_format_prompt(self.user_prompt.strip(), 'USER', self.model, final=True)}"
+                    prompt_truncated = prompt_system + prompt_user
+                    #print(f"Prompt_1:{prompt_truncated}")
+                    answer = await self.inference(prompt_truncated, self.model_repository)
+                    #print(f"Answer:{answer['output']['choices'][0]['text']}")
+                    answers_list.append(answer['output']['choices'][0]['text'])
+                    
+                # splitting long string patch into MAX_TOKEN sized chunks
+                truncated, remainder = self.truncate_to_tokens(string, self.MAX_TOKENS, self.model_repository, token_overlap=100, file_details=file_data) 
+                #result = diff_patch.format(patch=truncated) + "\n"
+                result = truncated + "\n\n"
+                remainder_tokens = self.token_count(remainder)
+                
+                # execute inference over first chunk of string
+                prompt_system = self.neo_format_prompt(UNIVERSAL_ANALYSIS.format(patch=result), "SYSTEM", self.model )
+                prompt_user = f"{self.neo_format_prompt(self.user_prompt, 'USER', self.model, final=True)}"
+                prompt_truncated = prompt_system + prompt_user
+                #print(f"Prompt_2:{prompt_truncated}")
+                answer = await self.inference(prompt_truncated, self.model_repository)
+                #print(f"Answer:{answer['output']['choices'][0]['text']}")
+                outputs.append(answer['output']['choices'][0]['text'])
+                
+                while remainder_tokens > 0: # make sure to finish processing the second part of the split
+                    
+                    truncated, remainder = self.truncate_to_tokens(remainder, self.MAX_TOKENS, self.model_repository, token_overlap=100, file_details=file_data)
+                    result = truncated + "\n\n"
+                    #result = diff_patch.format(patch=truncated) + "\n"
+                    
+                    #previous_instruction = prompt_user.split("```")[0]
+                    prompt_system = self.neo_format_prompt(UNIVERSAL_ANALYSIS.format(patch=result), "SYSTEM", self.model )
+                    prompt_user = f"{self.neo_format_prompt(self.user_prompt, 'USER', self.model, final=True)}"
+                    prompt_truncated = prompt_system + prompt_user
+                    #print(f"Prompt_3:{prompt_truncated}")
+                    answer = await self.inference(prompt_truncated, self.model_repository)
+                    #print(f"Answer:{answer['output']['choices'][0]['text']}")
+                    outputs.append(answer['output']['choices'][0]['text'])
+                    
+                    remainder_tokens = self.token_count(remainder)
+                    truncated = remainder
+    
+                
+                #for num, out in enumerate(outputs):
+                    #print(f"output #{num}:{out}")
+                answers_list.append(outputs)
+                result = "" # reset the cumulative content variable
+        if result != "":
+            prompt_system = self.neo_format_prompt(UNIVERSAL_ANALYSIS.format(patch=result), "SYSTEM", self.model )
+            prompt_user = f"{self.neo_format_prompt(self.user_prompt, 'USER', self.model, final=True)}"
+            prompt_truncated = prompt_system + prompt_user
+            answer = await self.inference(prompt_truncated, self.model_repository)
+            answers_list.append(answer['output']['choices'][0]['text'])
+            #print(f"Last output:{await self.inference(prompt_truncated, model_name)}")
+        '''
+        output =    together.Complete.create(
+                    #model = "mistralai/Mixtral-8x7B-Instruct-v0.1", 
+                    #model="cognitivecomputations/dolphin-2.5-mixtral-8x7b",
+                    #model="NousResearch/Nous-Hermes-2-Mixtral-8x7B-DPO",   
+                    #model="NousResearch/Nous-Hermes-2-Mixtral-8x7B-SFT",   
+                    #model="Qwen/Qwen1.5-14B-Chat",
+                    #prompt=instruction.format(filename = self.filename, additions = self.additions, deletions = self.deletions, changes = self.changes, user_prompt = self.user_prompt),
+                    prompt=universal_prompt.format(user_prompt=self.user_prompt),
+                    #model="Qwen/Qwen2-72B-Instruct",
+                    model="meta-llama/Llama-3-70b-chat-hf",
+                    #model="meta-llama/Llama-3-8b-chat-hf",
+                    #model="deepseek-ai/deepseek-coder-33b-instruct",
+                    #prompt=prompt_3,
+                    #prompt=PROMPT_SATORI_FINAL_L.format(query=query, hist=t2),
+                    temperature=0.1,
+                    top_p=0.85,
+                    top_k=40,
+                    max_tokens=128,  
+                    repetition_penalty=1.1,
+                    #stop = ["</s>", "[INST]", "<|im_end|>"]
+                    stop = ["</s>", "[INST]", "User:", "assistant"]#, "`", "` "] #, '"', "\"\n\n", "</json>",'"\n']#, "01", "_v01"]
+            )
+        '''
+        #print("\n")
+        #print(f"Prompt unico usado:{instruction}")
+        print("*"*25)
+        #out_long = output['output']['choices'][0]['text']
+        #print(out_long)
+        #print(output["output"]["usage"])
+        print("*"*25)
+        return answers_list
+
+    async def _arun_clash(
+        self,
+        answers: list,
+        answer_model: str ="",
+        max_tokens: int=128
+    ):
+        # Execute tool
+        """Use the tool."""
+        try:
+
+            # Date and query params 
+            #params = calculate_datetime_ranges(self.timezone)
+            #params["query"] = parameters
+            params={}
+            #params["hist"] = self.hist
+            '''
+            adv_query = await async_chain_together_m(
+                prompt=PROMPT_ADVANCED_QUERY_PULL_GITHUB,
+                params=params,
+                max_tokens=768,
+                temperature=0.1,
+                top_p=1,
+                top_k=50,
+                repetition_penalty=1.1,
+                model="meta-llama/Llama-3-70b-chat-hf",
+                stop = ["</s>", "[INST]", "<|EOT|>", '"'],
+                tool_name="ClickUp Advanced Query Search",
+                callback_manager=self.async_callback_manager
+                )
+            '''
+            # Log step clickup improver
+            #if self.verbose:
+            #    step = {"type": "clickup_query", "properties": {"query": adv_query}}
+            #    await self.async_callback_manager.queue.put(f"#STEP{json.dumps(step)}STEP#")
+            # Run the task extractor
+            #pulls = await self._arun(query=adv_query)
+            # Log step clickup improver
+            #if self.verbose:
+            #    step = {"type": f"{self.name}", "results": tasks}
+            #    await self.async_callback_manager.queue.put(f"#STEP_OUT{json_step.dumps(step, ignore_nan=True)}STEP_OUT#")
+            
+            token_counter = 0
+            aggregated_answers = ""
+            answers_list = []
+            unite_aggregation_prompt = "Show me the main points yielded by the analysis."
+            for answer in answers:
+                
+                if isinstance(answer, list): # the original file was split into parts, now the answers must be reassembled into one
+                    string_answer="\n\n".join(answer)# reassemble all separated answers into one
+                    string_answer = f"{string_answer}"
+                    token_counter = self.token_count(string_answer)
+                    aggregated_answers += f"\n\n<analysis> {string_answer} </analysis>"  
+                    #TODO: Compress a list of answers that together exceed the limit of tokens. Could gather list into max sized chunks before using a prompt to extract their main points.
+                    
+                elif isinstance(answer, str): # the answer corresponds to one or multiple files, but it did not require to splitting before analysis
+                    token_counter += self.token_count(answer)
+                    if token_counter <= self.MAX_TOKENS: # if we exceed the token limit here, we can answer in parts, since we do not need to compress separate answers, we can split them into groups
+                        aggregated_answers += f"\n\n<analysis> {answer} </analysis>"                
+                    else: # The aggregation has exceeded the token limit, execute current aggregated prompt and start over with the aggregation
+                        token_counter = self.token_count(answer)
+                        system_prompt = self.neo_format_prompt(UNIVERSAL_UNION.format(analysis=aggregated_answers), "SYSTEM", self.model)
+                        user_prompt_aggregation = f"{self.neo_format_prompt(unite_aggregation_prompt, 'USER', self.model, final=True)}"
+                        prompt_truncated = system_prompt + user_prompt_aggregation
+                        print(f"Prompt:{prompt_truncated}")
+                        answer = await self.inference(prompt_truncated, self.model)
+                        answers_list.append(answer['output']['choices'][0]['text'])
+                        aggregated_answers = f"\n{answer}"    
+                        
+            if aggregated_answers != "": # the current aggregation never exceeded the limit, thus, it was never executed in the previous for cycle
+                system_prompt = self.neo_format_prompt(UNIVERSAL_UNION.format(analysis=aggregated_answers), "SYSTEM", self.model)
+                user_prompt_aggregation = f"{self.neo_format_prompt(unite_aggregation_prompt, 'USER', self.model, final=True)}"
+                prompt_truncated = system_prompt + user_prompt_aggregation
+                print(f"Prompt:{prompt_truncated}")
+                answer = await self.inference(prompt_truncated, answer_model if answer_model != "" else self.model_repository)
+                answers_list.append(answer['output']['choices'][0]['text'])
+                
+            '''            
+            output =  together.Complete.create(
+                    #model = "mistralai/Mixtral-8x7B-Instruct-v0.1", 
+                    #model="cognitivecomputations/dolphin-2.5-mixtral-8x7b",
+                    model="NousResearch/Nous-Hermes-2-Mixtral-8x7B-DPO",   
+                    #model="NousResearch/Nous-Hermes-2-Mixtral-8x7B-SFT",   
+                    #model="Qwen/Qwen1.5-14B-Chat",
+                    prompt=answer_inst,
+                    #model="Qwen/Qwen2-72B-Instruct",
+                    #model="meta-llama/Llama-3-70b-chat-hf",
+                    #model="meta-llama/Llama-3-8b-chat-hf",
+                    #model="deepseek-ai/deepseek-coder-33b-instruct",
+                    #prompt=prompt_3,
+                    #prompt=PROMPT_SATORI_FINAL_L.format(query=query, hist=t2),
+                    temperature=0.1,
+                    top_p=0.85,
+                    top_k=40,
+                    max_tokens=128,  
+                    repetition_penalty=1.1,
+                    #stop = ["</s>", "[INST]", "<|im_end|>"]
+                    stop = ["</s>", "[INST]", "User:", "assistant"]#, "`", "` "] #, '"', "\"\n\n", "</json>",'"\n']#, "01", "_v01"]
+            )
+            '''
+            #print("\n")
+            #print(f"Prompt run clash (answer inst):{answer_inst}")
+            #out_long = output['output']['choices'][0]['text']
+            #print(f"Answer prompt output:\n{out_long}")
+            #print(output["output"]["usage"])
+            print("*"*25)
+            # Export
+            if self.export:
+                await self.async_callback_manager.queue.put(f"\nExport: [{self.user_msg}]({tasks['export_file']})")
+            #return {"finish": True, "response": output['output']['choices'][0]['text']}
+            return {"finish":True, "response": answers_list}
+        except Exception as e_tasks_clickup:
+            ic(e_tasks_clickup)
+            spaces = '- ' + '\n- '.join([f'{x}: {y}' for x, y in self.clickup_dicts['spaces'].items()])
+            trace = traceback.format_exc()
+            return {"error": "No tasks could be extracted.", "raise_msg": f"Is it likely the query used and the search parameters are not correct."}
 
 class GithubReviewPullRequest():
     
@@ -18,7 +445,7 @@ class GithubReviewPullRequest():
         self.export = False
 
     
-    pr = PullRequest()
+    pr = PullRequests()
     
     parameters = '''
     | Parameter       | Type     | Description                                                                                   |
@@ -264,7 +691,7 @@ class GithubMergePullRequest():
         self.export = False
 
     
-    pr = PullRequest()
+    pr = PullRequests()
     
     parameters = '''
     | Parameter         | Type     | Description                                                                                         |
@@ -510,7 +937,7 @@ class GithubUpdatePullRequest():
         self.export = False
 
     
-    pr = PullRequest()
+    pr = PullRequests()
     
     parameters = '''
     | Parameter       | Type     | Description                                                                                   |
@@ -747,12 +1174,13 @@ class GithubUpdatePullRequest():
 
 class GithubAnalyzeDiff():
     
-    def __init__(self, diff):
+    def __init__(self, diff, user_prompt):
         self.patch = diff.get('patch', 'No changes')
         self.filename = diff.get('filename', '')
         self.deletions = diff.get('deletions', 0)
         self.additions = diff.get('additions', 0)
         self.changes = diff.get('changes', 0)
+        self.user_prompt = user_prompt
         
     
     ANSWER_SYSTEM= '''<|begin_of_text|><|start_header_id|>system<|end_header_id|>
@@ -772,10 +1200,16 @@ class GithubAnalyzeDiff():
         
         self.hist = chat_history
     
+        self.user_prompt+= f"\nThe changes are as follows:\n{self.patch}"
         instruction = '''
         <|begin_of_text|><|start_header_id|>system<|end_header_id|>
         You are a helpful AI assistant, knowledgeable about the Github API. You will be reporting to the user about the information yielded by a previous pull request query. Specifically, you will receive a diff patch containing the modifications made to a file inside a given pull request. Your task is to give a concise report about the changes made. Your answer must begin with the filename, and number of additions, deletions and changes. Then it must be a numbered list of the main modifications, each with a description. If there are no changes, state that the file is new.<|eot_id|><|start_header_id|>user<|end_header_id|>
         The filename is {filename}. Additions: {additions}, deletions: {deletions}, changes: {changes}. This is the diff patch for the file:´´´\n{user_prompt}\n´´´<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+        '''
+        
+        universal_prompt='''<|begin_of_text|><|start_header_id|>system<|end_header_id|>
+        You are a helpful AI assistant, knowledgeable about the Github API. You will receive an instruction to perform certain analysis or synthesis task over information related to pull requests. Assume the user has a grasp on basic git concepts. Your answers must be concise and only contain critical information to the task at hand.<|eot_id|><|start_header_id|>user<|end_header_id|>
+        {user_prompt}<|eot_id|><|start_header_id|>assistant<|end_header_id|>
         '''
         
         #example = "- Search for open pull requests with base branch tester\n- Search for all pull requests with head octocat:new-branch, sort them in ascending order."
@@ -788,7 +1222,8 @@ class GithubAnalyzeDiff():
                     #model="NousResearch/Nous-Hermes-2-Mixtral-8x7B-DPO",   
                     #model="NousResearch/Nous-Hermes-2-Mixtral-8x7B-SFT",   
                     #model="Qwen/Qwen1.5-14B-Chat",
-                    prompt=instruction.format(filename = self.filename, additions = self.additions, deletions = self.deletions, changes = self.changes, user_prompt = self.patch),
+                    #prompt=instruction.format(filename = self.filename, additions = self.additions, deletions = self.deletions, changes = self.changes, user_prompt = self.user_prompt),
+                    prompt=universal_prompt.format(user_prompt=self.user_prompt),
                     #model="Qwen/Qwen2-72B-Instruct",
                     model="meta-llama/Llama-3-70b-chat-hf",
                     #model="meta-llama/Llama-3-8b-chat-hf",
@@ -875,7 +1310,7 @@ class GithubListPullRequest():
     '''
     #repo_owner = "qgis"
     #repo_name = "QGIS"
-    pr = PullRequest()
+    pr = PullRequests()
     session_path: str
     clickup_api: str
     workspace_id: int
@@ -1138,7 +1573,7 @@ class GithubDiffPullRequest():
         self.token = token
         self.repo_owner = repo_owner
         self.repo_name = repo_name
-        self.pr = PullRequest()
+        self.pr = PullRequests()
         self.lang: Optional[str] = "English"
         self.export: Optional[str] = False
         self.user_q = user_q
@@ -2500,3 +2935,19 @@ string_json = asyncio.run(pr._aprep_clash([""]))
 print(f"Query:{string_json}")
 res = asyncio.run(pr._arun_clash(string_json))
 '''
+
+#file_path = "./message (74).txt"
+#with open(file_path, 'r') as file:
+ #   lines = file.readlines()
+
+#segundo_prompt = "".join(lines)
+
+#model = "meta-llama/Meta-Llama-3-70B"
+#model= "meta-llama/Meta-Llama-3.1-70B-Instruct"
+#user_prompt = "List the main changes mades"
+#gdiff = GithubDiff("", user_prompt, model)
+#prompt_system = gdiff.neo_format_prompt(UNIVERSAL_ANALYSIS.format(patch=None), "SYSTEM", "Llama" )
+#print(prompt_system)
+#res = asyncio.run(gdiff._aprep_clash([""]))
+#res = asyncio.run(gdiff.inference(segundo_prompt, model))
+#print(res['output']['choices'][0]['text'])
